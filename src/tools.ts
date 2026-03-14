@@ -365,7 +365,8 @@ export async function handleTool(
 
     case "fm_create_record": {
       const { table, fields } = args as any;
-      const r = await client.createRecord(table, fields);
+      const data = { ...(fields ?? {}) };
+      const r = await client.createRecord(table, data);
       if (!r.ok) return fail(r.error ?? "");
       return ok({ created: true, record: r.data });
     }
