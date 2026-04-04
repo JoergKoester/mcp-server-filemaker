@@ -1,6 +1,6 @@
 // src/data-api-client.ts
-// HTTP client for FileMaker Data API (REST)
-// Supplements the OData client with features only available via Data API:
+// HTTP client for the FileMaker Data API (REST)
+// Complements the OData client with capabilities only available via Data API:
 // - Setting global fields (PATCH /globals)
 // - Running scripts with session context
 
@@ -22,19 +22,23 @@ export class FileMakerDataAPIClient {
   private baseUrl: string;
   private username: string;
   private password: string;
+  private timeoutMs: number;
 
   constructor(config: FMConfig) {
     this.baseUrl = `${config.host}/fmi/data/vLatest/databases/${encodeURIComponent(config.database)}`;
     this.username = config.username;
     this.password = config.password;
+    this.timeoutMs = config.timeoutMs ?? 15000;
   }
 
-  // --- Session management ----------------------------------------------------
+  // --- SESSION MANAGEMENT ----------------------------------------------------
 
   /** Login: POST /sessions → Bearer Token */
   async login(): Promise<DataAPIResponse<string>> {
     const url = `${this.baseUrl}/sessions`;
     const auth = "Basic " + Buffer.from(`${this.username}:${this.password}`).toString("base64");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
       const res = await fetch(url, {
@@ -44,6 +48,7 @@ export class FileMakerDataAPIClient {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({}),
+        signal: controller.signal,
       });
 
       const raw = await res.text();
@@ -59,25 +64,38 @@ export class FileMakerDataAPIClient {
 
       return { ok: true, status: res.status, data: token };
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return { ok: false, status: 0, error: `Timeout after ${this.timeoutMs}ms — FM server not responding` };
+      }
       return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   /** Logout: DELETE /sessions/{token} */
   async logout(token: string): Promise<DataAPIResponse<void>> {
     const url = `${this.baseUrl}/sessions/${token}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await fetch(url, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
       });
       return { ok: res.ok, status: res.status };
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return { ok: false, status: 0, error: `Timeout after ${this.timeoutMs}ms — FM server not responding` };
+      }
       return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  // --- Globals ---------------------------------------------------------------
+  // --- GLOBALS ---------------------------------------------------------------
 
   /**
    * Set global fields: PATCH /globals
@@ -88,6 +106,8 @@ export class FileMakerDataAPIClient {
     globals: Record<string, string>
   ): Promise<DataAPIResponse<void>> {
     const url = `${this.baseUrl}/globals`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await fetch(url, {
         method: "PATCH",
@@ -96,6 +116,7 @@ export class FileMakerDataAPIClient {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ globalFields: globals }),
+        signal: controller.signal,
       });
 
       const raw = await res.text();
@@ -104,11 +125,16 @@ export class FileMakerDataAPIClient {
       }
       return { ok: true, status: res.status };
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return { ok: false, status: 0, error: `Timeout after ${this.timeoutMs}ms — FM server not responding` };
+      }
       return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  // --- Script execution ------------------------------------------------------
+  // --- SCRIPT EXECUTION ------------------------------------------------------
 
   /**
    * Run a script via Data API (requires a layout name).
@@ -127,6 +153,8 @@ export class FileMakerDataAPIClient {
       url += `?script.param=${encodeURIComponent(scriptParam)}`;
     }
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await fetch(url, {
         method: "GET",
@@ -134,6 +162,7 @@ export class FileMakerDataAPIClient {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
+        signal: controller.signal,
       });
 
       const raw = await res.text();
@@ -151,11 +180,16 @@ export class FileMakerDataAPIClient {
         data: { scriptError, scriptResult },
       };
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return { ok: false, status: 0, error: `Timeout after ${this.timeoutMs}ms — FM server not responding` };
+      }
       return { ok: false, status: 0, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  // --- Combined operations ---------------------------------------------------
+  // --- COMBINED OPERATIONS ---------------------------------------------------
 
   /**
    * Set globals + run script in a single session.
@@ -178,7 +212,7 @@ export class FileMakerDataAPIClient {
       // 2. Set globals
       const globalsRes = await this.setGlobals(token, globals);
       if (!globalsRes.ok) {
-        return { ok: false, status: globalsRes.status, error: `Failed to set globals: ${globalsRes.error}` };
+        return { ok: false, status: globalsRes.status, error: `Setting globals failed: ${globalsRes.error}` };
       }
 
       // 3. Run script

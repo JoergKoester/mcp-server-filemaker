@@ -1,11 +1,11 @@
 // src/tools.ts
-// MCP tool definitions with Zod schemas and handler logic
+// All MCP tool definitions with Zod schemas and handler logic
 
 import { z } from "zod";
 import { FileMakerODataClient } from "./odata-client.js";
 import { FileMakerDataAPIClient } from "./data-api-client.js";
 
-// --- Zod schemas (input validation) ------------------------------------------
+// --- ZOD SCHEMAS (input validation) ------------------------------------------
 
 export const schemas = {
 
@@ -15,14 +15,14 @@ export const schemas = {
 
   // Query
   queryRecords: z.object({
-    table:   z.string().describe("FileMaker table name (exact name as defined in FM)"),
-    filter:  z.string().optional().describe("OData $filter expression, e.g. \"Name eq 'John'\""),
+    table:   z.string().describe("FileMaker table name (exact name from FM)"),
+    filter:  z.string().max(2000).optional().describe("OData $filter expression, e.g. \"Name eq 'Max'\". Escape single quotes in string literals: ' → ''"),
     select:  z.string().optional().describe("Comma-separated field names, e.g. \"ID,Name,Date\""),
-    top:     z.number().int().min(1).max(1000).optional().describe("Max number of records to return"),
-    skip:    z.number().int().min(0).optional().describe("Number of records to skip (pagination)"),
-    orderby: z.string().optional().describe("Sort order, e.g. \"Name asc\""),
-    expand:  z.string().optional().describe("Include portals, e.g. \"LineItems\""),
-    count:   z.boolean().optional().describe("Include total record count"),
+    top:     z.number().int().min(1).max(1000).optional().describe("Max number of records"),
+    skip:    z.number().int().min(0).optional().describe("Records to skip (pagination)"),
+    orderby: z.string().max(2000).optional().describe("Sort order, e.g. \"Name asc\""),
+    expand:  z.string().optional().describe("Include related portals, e.g. \"LineItems\""),
+    count:   z.boolean().optional().describe("Return total record count"),
   }),
 
   getRecord: z.object({
@@ -33,7 +33,7 @@ export const schemas = {
   // CRUD
   createRecord: z.object({
     table:  z.string(),
-    fields: z.record(z.unknown()).describe("Field data as key-value object"),
+    fields: z.record(z.unknown()).describe("Field data as a key/value object"),
   }),
 
   updateRecord: z.object({
@@ -49,7 +49,7 @@ export const schemas = {
 
   // Scripts
   runScript: z.object({
-    scriptName:  z.string().describe("Exact script name as defined in FileMaker. Spaces and special characters are allowed (URL-encoded automatically)."),
+    scriptName:  z.string().describe("Exact script name as defined in FileMaker. Spaces and special characters are allowed (URL-encoded)."),
     scriptParam: z.string().optional().describe("Script parameter (JSON string recommended)"),
   }),
 
@@ -68,93 +68,92 @@ export const schemas = {
   // Batch
   batch: z.object({
     requests: z.array(z.object({
-      method: z.enum(["GET","POST","PATCH","PUT","DELETE"]),
-      path:   z.string().describe("Relative path, e.g. /Contacts or /Contacts(123)"),
-      body:   z.record(z.unknown()).optional(),
+      method: z.enum(["GET"]).describe("Only GET is supported. Write ops (POST/PATCH/DELETE) require changesets and are not implemented here."),
+      path:   z.string().describe("Relative path, e.g. /Artists or /Artists(123)"),
       id:     z.string().optional(),
-    })).describe("List of OData requests (write ops require changesets — currently only GET batches are reliable)"),
+    })).describe("List of OData GET requests. Use individual tools for write operations."),
   }),
 
-  // --- Test & validation tools -----------------------------------------------
+  // --- TEST & VALIDATION TOOLS -----------------------------------------------
 
-  /** Create a structured test record and return its ROWID */
+  /** Creates a structured test record and returns the ROWID */
   createTestRecord: z.object({
     table:    z.string(),
     fields:   z.record(z.unknown()),
-    tag:      z.string().optional().describe("Marker text for later cleanup, e.g. '__TEST__'"),
-    tagField: z.string().describe("Field name for the test marker (must exist as a text field in the FM table)"),
+    tag:      z.string().regex(/^[a-zA-Z0-9_-]+$/).optional().describe("Marker text for later cleanup, e.g. '__TEST__'"),
+    tagField: z.string().regex(/^[a-zA-Z0-9_.]+$/).describe("Field name for the test marker (must exist as a text field in the FM table)"),
   }),
 
-  /** Delete all records matching a specific test tag */
+  /** Deletes all records with a specific test tag */
   cleanupTestData: z.object({
     table:    z.string(),
-    tag:      z.string().optional().default("__CLAUDE_TEST__"),
-    tagField: z.string().describe("Field name for the test marker (must exist as a text field in the FM table)"),
+    tag:      z.string().regex(/^[a-zA-Z0-9_-]+$/).optional().default("__MCP_TEST__"),
+    tagField: z.string().regex(/^[a-zA-Z0-9_.]+$/).describe("Field name for the test marker (must exist as a text field in the FM table)"),
   }),
 
-  /** Check whether a record has the expected field values */
+  /** Checks whether a record has the expected field values */
   assertRecord: z.object({
     table:    z.string(),
     rowId:    z.union([z.string(), z.number()]),
     expected: z.record(z.unknown()).describe("Expected field values"),
   }),
 
-  /** Check whether a query returns the expected number of records */
+  /** Checks whether a query returns the expected number of records */
   assertCount: z.object({
     table:    z.string(),
-    filter:   z.string().optional(),
+    filter:   z.string().max(2000).optional(),
     expected: z.number().int().describe("Expected record count"),
   }),
 
-  /** Run a script and validate its ResultCode */
+  /** Runs a script and validates its result code */
   runScriptAndAssert: z.object({
     scriptName:         z.string(),
     scriptParam:        z.string().optional(),
     expectedResultCode: z.union([z.string(), z.number()]).optional().default("0"),
   }),
 
-  /** Read DB structure and return tables + fields as overview */
+  /** Reads DB structure and returns tables + fields as an overview */
   introspectTable: z.object({
     table: z.string().optional().describe("If empty: list all tables. If set: show fields with types from $metadata."),
   }),
 
-  // --- Data API tools (globals + script with session context) ----------------
+  // --- DATA API TOOLS (globals + script with session context) ----------------
 
   /** Set global fields via Data API */
   setGlobals: z.object({
-    globals: z.record(z.string()).describe("Global fields as key-value. Keys must be fully qualified: 'Table::FieldName_g'"),
+    globals: z.record(z.string()).describe("Global fields as key/value. Keys must be fully qualified: 'Table::FieldName_g'"),
   }),
 
-  /** Run script with globals set in the same session (Login → Set Globals → Run Script → Logout) */
+  /** Run a script with globals set (Login → Set Globals → Run Script → Logout) */
   runScriptWithGlobals: z.object({
-    globals:     z.record(z.string()).describe("Global fields as key-value. Keys: 'Table::FieldName_g'"),
+    globals:     z.record(z.string()).describe("Global fields as key/value. Keys: 'Table::FieldName_g'"),
     layout:      z.string().describe("Layout name for Data API script execution (must be based on the correct table)"),
     scriptName:  z.string().describe("Exact script name"),
     scriptParam: z.string().optional().describe("Script parameter (JSON string recommended)"),
   }),
 };
 
-// --- Tool definitions --------------------------------------------------------
+// --- TOOL DESCRIPTIONS -------------------------------------------------------
 
 export const toolDefinitions = [
   {
     name: "fm_get_metadata",
-    description: "Reads the full OData $metadata document of the FileMaker database (EDMX/XML). Contains all tables, fields, types and relationships.",
+    description: "Reads the full OData $metadata document of the FileMaker database (EDMX/XML). Contains all tables, fields, types, and relationships.",
     inputSchema: schemas.getMetadata,
   },
   {
     name: "fm_get_service_document",
-    description: "Lists all available EntitySets (tables) of the FileMaker database.",
+    description: "Lists all available EntitySets (tables/layouts) of the FileMaker database.",
     inputSchema: schemas.getServiceDocument,
   },
   {
     name: "fm_query",
-    description: "Query records from a FileMaker table. Supports OData $filter, $select, $top, $skip, $orderby, $expand, $count.",
+    description: "Query records from a FileMaker table. Supports OData $filter, $select, $top, $skip, $orderby, $expand, $count. Default limit: 100 records (override with $top).",
     inputSchema: schemas.queryRecords,
   },
   {
     name: "fm_get_record",
-    description: "Read a single record by ROWID from FileMaker.",
+    description: "Read a single FileMaker record by ROWID.",
     inputSchema: schemas.getRecord,
   },
   {
@@ -174,7 +173,7 @@ export const toolDefinitions = [
   },
   {
     name: "fm_run_script",
-    description: "Execute a FileMaker script. Returns scriptResult with code and resultParameter.",
+    description: "Run a FileMaker script. Returns scriptResult with code and resultParameter.",
     inputSchema: schemas.runScript,
   },
   {
@@ -184,12 +183,12 @@ export const toolDefinitions = [
   },
   {
     name: "fm_add_field",
-    description: "Add a new field to an existing FileMaker table. Field types in SQL-style: VARCHAR(n), INT, NUMERIC, DATE, TIME, TIMESTAMP, BLOB.",
+    description: "Add a new field to an existing FileMaker table. SQL-style field types: VARCHAR(n), INT, NUMERIC, DATE, TIME, TIMESTAMP, BLOB.",
     inputSchema: schemas.addField,
   },
   {
     name: "fm_batch",
-    description: "Execute multiple OData requests in a single HTTP call (batch). Currently only reliable for GET requests — write ops require changesets.",
+    description: "Execute multiple OData GET requests in a single HTTP call (batch). Use individual tools for write operations.",
     inputSchema: schemas.batch,
   },
   // -- Test & Validation --
@@ -205,7 +204,7 @@ export const toolDefinitions = [
   },
   {
     name: "fm_assert_record",
-    description: "Validates whether a FileMaker record contains the expected field values. Returns PASS/FAIL with diff.",
+    description: "Validates that a FileMaker record contains the expected field values. Returns PASS/FAIL with diff.",
     inputSchema: schemas.assertRecord,
   },
   {
@@ -215,28 +214,28 @@ export const toolDefinitions = [
   },
   {
     name: "fm_run_script_and_assert",
-    description: "Executes a FileMaker script and checks whether the ResultCode matches the expected value.",
+    description: "Runs a FileMaker script and checks whether the result code matches the expected value.",
     inputSchema: schemas.runScriptAndAssert,
   },
   {
     name: "fm_introspect",
-    description: "Analyzes database structure: lists tables or shows all fields of a table with native FM field types from $metadata.",
+    description: "Analyzes the database structure: lists tables or shows all fields of a table with native FM field types from $metadata.",
     inputSchema: schemas.introspectTable,
   },
   // -- Data API Tools --
   {
     name: "fm_set_globals",
-    description: "Sets global fields via FileMaker Data API (not OData). Opens a Data API session, sets the globals, and closes the session. Keys must be fully qualified: 'Table::FieldName_g'.",
+    description: "Sets global fields via FileMaker Data API (not OData). Opens a Data API session, sets the globals, then closes the session. Keys must be fully qualified: 'Table::FieldName_g'.",
     inputSchema: schemas.setGlobals,
   },
   {
     name: "fm_run_script_with_globals",
-    description: "Sets global fields and runs a script in the SAME Data API session. This enables scripts that depend on global fields as context (e.g. Sessions::UUID_g). Flow: Login → Set Globals → Run Script → Logout.",
+    description: "Sets global fields and runs a script in the SAME Data API session. This makes scripts that depend on global fields for context work (e.g. SESSIONS::UUID_g). Flow: Login → Set Globals → Run Script → Logout.",
     inputSchema: schemas.runScriptWithGlobals,
   },
 ];
 
-// --- Handler -----------------------------------------------------------------
+// --- HANDLER -----------------------------------------------------------------
 
 export async function handleTool(
   name: string,
@@ -253,19 +252,49 @@ export async function handleTool(
     content: [{ type: "text" as const, text: `ERROR: ${msg}` }],
   });
 
+  // Some MCP clients serialize object-typed tool arguments as JSON strings.
+  // Accept both defensively: real objects directly, strings via JSON.parse.
+  // Without this guard, JSON.stringify(stringValue) sends a JSON string literal
+  // to FM → POST creates a record with NULL fields, PATCH returns error 8310.
+  const coerceObject = (v: unknown, label: string): Record<string, unknown> => {
+    if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
+    if (typeof v === "string") {
+      try {
+        const parsed = JSON.parse(v);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      } catch {
+        // fall through
+      }
+    }
+    throw new Error(`Argument "${label}" must be an object (got: ${typeof v})`);
+  };
+
+  const coerceArray = (v: unknown, label: string): unknown[] => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") {
+      try {
+        const parsed = JSON.parse(v);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // fall through
+      }
+    }
+    throw new Error(`Argument "${label}" must be an array (got: ${typeof v})`);
+  };
+
   switch (name) {
 
     // --- Metadata ------------------------------------------------------------
 
     case "fm_get_metadata": {
       const r = await client.getMetadata();
-      if (!r.ok) return fail(r.error ?? "Failed to retrieve metadata");
+      if (!r.ok) return fail(r.error ?? "Metadata not available");
       return ok({ status: r.status, metadata: r.data });
     }
 
     case "fm_get_service_document": {
       const r = await client.getServiceDocument();
-      if (!r.ok) return fail(r.error ?? "Failed to retrieve service document");
+      if (!r.ok) return fail(r.error ?? "Service document not available");
       return ok(r.data);
     }
 
@@ -282,24 +311,29 @@ export async function handleTool(
         }));
         return ok({ tables, count: tables?.length });
       } else {
-        // Read fields of a table from $metadata (native FM types)
+        // Read fields of a table from $metadata (native FM types).
+        // Note: EDMX XML is deliberately parsed by regex rather than with a
+        // full XML parser. The FM EDMX format is stable and consistently
+        // structured. If the format changes, consider switching to
+        // fast-xml-parser.
         const r = await client.getMetadata();
-        if (!r.ok) return fail(r.error ?? "Failed to retrieve metadata");
+        if (!r.ok) return fail(r.error ?? "Metadata not available");
         const xml = r.data ?? "";
 
-        // 1) Find EntitySet to determine the referenced EntityType name
+        // 1) Find EntitySet to resolve the referenced EntityType name
+        //    Format: <EntitySet Name="MYTABLE" EntityType="..." />
         const entitySetRegex = new RegExp(
           `<EntitySet\\s+Name="${escapeRegex(table)}"\\s+EntityType="([^"]+)"`,
           "i"
         );
         const setMatch = xml.match(entitySetRegex);
 
-        // EntityType name: from EntitySet reference (e.g. "FM.Contacts") or fallback to table
+        // EntityType name: from EntitySet reference (e.g. "FM.MYTABLE") or fall back to table
         let entityTypeName = table;
         if (setMatch) {
           // EntityType may be qualified (Namespace.Name) — extract just the name
           const fullType = setMatch[1];
-          entityTypeName = fullType.includes(".") ? fullType.split(".").pop()! : fullType;
+          entityTypeName = fullType.includes(".") ? (fullType.split(".").pop() ?? table) : fullType;
         }
 
         // 2) Find EntityType with the resolved name
@@ -309,7 +343,7 @@ export async function handleTool(
         );
         const entityMatch = xml.match(entityTypeRegex);
         if (!entityMatch) {
-          return fail(`Table "${table}" not found in $metadata (EntityType "${entityTypeName}" does not exist). Check available tables with fm_introspect (without table parameter).`);
+          return fail(`Table "${table}" not found in $metadata (EntityType "${entityTypeName}" does not exist). List available tables with fm_introspect (no table argument).`);
         }
         const entityBlock = entityMatch[1];
 
@@ -333,7 +367,7 @@ export async function handleTool(
           }
         }
 
-        // Get total record count via $count
+        // Total record count via $count
         const countRes = await client.queryRecords(table, { top: 1, select: "ROWID", count: true });
         const totalRecords = countRes.ok ? (countRes.data as any)?.["@odata.count"] : undefined;
 
@@ -341,10 +375,14 @@ export async function handleTool(
       }
     }
 
-    // --- Data read -----------------------------------------------------------
+    // --- Data Read -----------------------------------------------------------
 
     case "fm_query": {
       const { table, ...params } = args as any;
+      // Default limit protects against accidentally huge responses
+      if (params.top === undefined && !params.count) {
+        params.top = 100;
+      }
       const r = await client.queryRecords(table, params);
       if (!r.ok) return fail(r.error ?? "");
       return ok({
@@ -361,19 +399,18 @@ export async function handleTool(
       return ok(r.data);
     }
 
-    // --- Data write ----------------------------------------------------------
+    // --- Data Write ----------------------------------------------------------
 
     case "fm_create_record": {
       const { table, fields } = args as any;
-      const data = { ...(fields ?? {}) };
-      const r = await client.createRecord(table, data);
+      const r = await client.createRecord(table, coerceObject(fields, "fields"));
       if (!r.ok) return fail(r.error ?? "");
       return ok({ created: true, record: r.data });
     }
 
     case "fm_update_record": {
       const { table, rowId, fields } = args as any;
-      const r = await client.updateRecord(table, rowId, fields);
+      const r = await client.updateRecord(table, rowId, coerceObject(fields, "fields"));
       if (!r.ok) return fail(r.error ?? "");
       return ok({ updated: true, rowId });
     }
@@ -423,16 +460,16 @@ export async function handleTool(
 
     case "fm_batch": {
       const { requests } = args as any;
-      const r = await client.batch(requests);
+      const r = await client.batch(coerceArray(requests, "requests") as any);
       if (!r.ok) return fail(r.error ?? "");
       return ok({ batchResult: r.data });
     }
 
-    // --- Test & validation ---------------------------------------------------
+    // --- Test & Validation ---------------------------------------------------
 
     case "fm_create_test_record": {
-      const { table, fields, tag = "__CLAUDE_TEST__", tagField } = args as any;
-      const data = { ...fields, [tagField]: tag };
+      const { table, fields, tag = "__MCP_TEST__", tagField } = args as any;
+      const data = { ...coerceObject(fields, "fields"), [tagField]: tag };
       const r = await client.createRecord(table, data);
       if (!r.ok) return fail(r.error ?? "");
       const rowId = (r.data as any)?.ROWID ?? (r.data as any)?.rowId;
@@ -440,10 +477,10 @@ export async function handleTool(
     }
 
     case "fm_cleanup_test_data": {
-      const { table, tag = "__CLAUDE_TEST__", tagField } = args as any;
+      const { table, tag = "__MCP_TEST__", tagField } = args as any;
       // Find all test records
       const query = await client.queryRecords(table, {
-        filter: `${tagField} eq '${tag}'`,
+        filter: `${tagField} eq '${tag.replace(/'/g, "''")}'`,
         select: `ROWID,${tagField}`,
         top: 500,
       });
@@ -451,21 +488,49 @@ export async function handleTool(
       const records = query.data?.value ?? [];
       const deleted: unknown[] = [];
       const errors: unknown[] = [];
+      let consecutiveErrors = 0;
       for (const rec of records) {
         const id = (rec as any).ROWID;
-        const d = await client.deleteRecord(table, id);
-        if (d.ok) deleted.push(id);
-        else errors.push({ id, error: d.error });
+        if (id === undefined || id === null) {
+          errors.push({ id: null, error: "ROWID missing from record" });
+          continue;
+        }
+        let d: Awaited<ReturnType<typeof client.deleteRecord>>;
+        try {
+          d = await client.deleteRecord(table, id);
+        } catch (err) {
+          errors.push({ id, error: err instanceof Error ? err.message : String(err) });
+          consecutiveErrors++;
+          if (consecutiveErrors >= 5) {
+            errors.push({ aborted: true, reason: "5 consecutive errors — aborted" });
+            break;
+          }
+          continue;
+        }
+        if (d.ok) {
+          deleted.push(id);
+          consecutiveErrors = 0;
+        } else {
+          errors.push({ id, error: d.error });
+          consecutiveErrors++;
+          if (consecutiveErrors >= 5) {
+            errors.push({ aborted: true, reason: "5 consecutive errors — aborted" });
+            break;
+          }
+        }
       }
       return ok({ cleaned: deleted.length, errors, table, tag, tagField });
     }
 
     case "fm_assert_record": {
-      const { table, rowId, expected } = args as any;
+      const { table, rowId, expected: expectedArg } = args as any;
+      const expected = coerceObject(expectedArg, "expected");
       const r = await client.getRecord(table, rowId);
       if (!r.ok) return fail(r.error ?? "");
       const actual = r.data as Record<string, unknown>;
       const diffs: Array<{ field: string; expected: unknown; actual: unknown }> = [];
+      // String comparison is deliberate — FM returns values loosely typed.
+      // "1" === 1 and "2026-04-04" === Date(...) are treated as equal here.
       for (const [field, expVal] of Object.entries(expected)) {
         const actVal = actual[field];
         if (String(actVal) !== String(expVal)) {
@@ -512,17 +577,17 @@ export async function handleTool(
       });
     }
 
-    // --- Data API tools ------------------------------------------------------
+    // --- Data API Tools ------------------------------------------------------
 
     case "fm_set_globals": {
-      if (!dataApiClient) return fail("Data API client not configured. Extended Privilege 'fmrest' required for the API user.");
-      const { globals } = args as { globals: Record<string, string> };
+      if (!dataApiClient) return fail("Data API client not configured. Extended Privilege 'fmrest' is required on the API user.");
+      const globals = coerceObject((args as any).globals, "globals") as Record<string, string>;
       const loginRes = await dataApiClient.login();
       if (!loginRes.ok || !loginRes.data) return fail(`Login failed: ${loginRes.error}`);
       const token = loginRes.data;
       try {
         const r = await dataApiClient.setGlobals(token, globals);
-        if (!r.ok) return fail(`Failed to set globals: ${r.error}`);
+        if (!r.ok) return fail(`Setting globals failed: ${r.error}`);
         return ok({ success: true, globalsSet: Object.keys(globals) });
       } finally {
         await dataApiClient.logout(token).catch(() => {});
@@ -530,13 +595,13 @@ export async function handleTool(
     }
 
     case "fm_run_script_with_globals": {
-      if (!dataApiClient) return fail("Data API client not configured. Extended Privilege 'fmrest' required for the API user.");
-      const { globals, layout, scriptName, scriptParam } = args as {
-        globals: Record<string, string>;
+      if (!dataApiClient) return fail("Data API client not configured. Extended Privilege 'fmrest' is required on the API user.");
+      const { layout, scriptName, scriptParam } = args as {
         layout: string;
         scriptName: string;
         scriptParam?: string;
       };
+      const globals = coerceObject((args as any).globals, "globals") as Record<string, string>;
       const r = await dataApiClient.runScriptWithGlobals(globals, layout, scriptName, scriptParam);
       if (!r.ok) return fail(r.error ?? "");
       return ok({
@@ -553,9 +618,9 @@ export async function handleTool(
   }
 }
 
-// --- Helper ------------------------------------------------------------------
+// --- HELPER ------------------------------------------------------------------
 
-/** Escape special characters for RegExp */
+/** Escapes special characters for RegExp */
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
