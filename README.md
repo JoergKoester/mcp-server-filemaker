@@ -23,7 +23,7 @@ MCP Client  ──stdio──▶  MCP Server (Node.js)  ──OData v4 / HTTPS�
 1. **FileMaker Server** with OData access enabled (Admin Console → Connectors → OData)
 2. A dedicated **API user** with Extended Privilege `fmodata`
 3. For Data API tools (`fm_set_globals`, `fm_run_script_with_globals`): also `fmrest`
-4. **HTTPS** — required for production; self-signed certs supported for development
+4. **HTTPS with a valid certificate** — self-signed certificates are **not** supported
 
 ## Installation
 
@@ -50,8 +50,10 @@ Add the server to your MCP client config. For Claude Code and Claude Desktop, ed
         "FM_USERNAME": "api_user",
         "FM_PASSWORD": "your_password",
         "FM_ODATA_VERSION": "v4",
-        "FM_ALLOW_SELF_SIGNED": "false",
-        "FM_DISABLED_TOOLS": ""
+        "FM_TIMEOUT_MS": "15000",
+        "FM_RETRY_COUNT": "2",
+        "FM_DISABLED_TOOLS": "",
+        "FM_DEBUG": "false"
       }
     }
   }
@@ -67,8 +69,10 @@ Add the server to your MCP client config. For Claude Code and Claude Desktop, ed
 | `FM_USERNAME` | Yes | API user (needs Extended Privilege `fmodata`) |
 | `FM_PASSWORD` | Yes | Password |
 | `FM_ODATA_VERSION` | No | OData version, default `v4` |
-| `FM_ALLOW_SELF_SIGNED` | No | `true` to accept self-signed certificates (dev only!) |
+| `FM_TIMEOUT_MS` | No | HTTP request timeout in milliseconds, default `15000` |
+| `FM_RETRY_COUNT` | No | Retry attempts on transient failures (429/503), default `2` (set `0` to disable) |
 | `FM_DISABLED_TOOLS` | No | Comma-separated tool names to disable |
+| `FM_DEBUG` | No | `true` to log full tool arguments to stderr (may include record data) |
 
 ### Multiple Databases
 
@@ -167,7 +171,14 @@ FM_DISABLED_TOOLS=fm_create_table,fm_add_field,fm_delete_record
 | `data-api-client.ts` | HTTP client for FileMaker Data API (globals, session-scoped scripts) |
 | `tools.ts` | MCP tool definitions (Zod schemas), handler logic, test tools |
 
-The server is a **thin proxy** — no caching, no connection pooling. Each OData request uses Basic Auth; Data API tools manage their own session (login → action → logout).
+The server is a **thin proxy** — no caching. Each OData request uses Basic Auth; Data API tools manage their own session (login → action → logout). The OData client retries transient failures (HTTP 429/503) with exponential backoff; the Data API client currently does not retry.
+
+## Security Notes
+
+- **stdio transport has no authentication of its own** — anyone who can start the process has full access to the configured FileMaker database with the rights of the API user. Credentials live in your MCP client config (e.g. `~/.mcp.json`) and are protected by filesystem permissions only. In multi-user environments, secure the server process and config file accordingly.
+- **Startup logs to stderr** include the configured host, database, and **username** (no password, no API keys). Redirect stderr appropriately if that is sensitive.
+- **`FM_DEBUG=true`** logs the full arguments of every tool call to stderr, which may contain record data from your FileMaker database. Keep this off in production.
+- **OData `$filter` values** passed to `fm_query` are placed verbatim into the query string. Escape single quotes (`'` → `''`) in string literals yourself, and be aware that values containing URL-reserved characters (`#`, `+`, `%`) can corrupt the request.
 
 ## Development
 
